@@ -61,6 +61,11 @@ window.__ModuleLoader__.load({
       auth: 'Your session is not authorized; reload the page.',
       source: 'Source',
       remote: 'Remote',
+      search: 'Search plugins',
+      searchPlaceholder: 'Search by name, source, status…',
+      clearSearch: 'Clear search',
+      matchCount: '{shown} of {total}',
+      noMatch: 'No plugin matches “{query}”.',
     };
 
     const fr = {
@@ -116,6 +121,11 @@ window.__ModuleLoader__.load({
       auth: 'Votre session n’est pas autorisée ; rechargez la page.',
       source: 'Source',
       remote: 'Distant',
+      search: 'Rechercher des plugins',
+      searchPlaceholder: 'Rechercher par nom, source, statut…',
+      clearSearch: 'Effacer la recherche',
+      matchCount: '{shown} sur {total}',
+      noMatch: 'Aucun plugin ne correspond à « {query} ».',
     };
 
     const CSS = `
@@ -166,6 +176,18 @@ window.__ModuleLoader__.load({
 @keyframes mcp-spin { to { transform: rotate(360deg); } }
 .mcp-banner { margin: 0; padding: 8px 12px; border-radius: var(--dsw-radius-md, 8px); font-size: 12.5px; line-height: 18px; color: var(--dsw-alias-state-error-primary); border: .5px solid var(--dsw-alias-state-error-primary); }
 .mcp-empty { margin: 0; font-size: 13px; color: var(--dsw-alias-label-tertiary); }
+.mcp-search { position: relative; display: flex; align-items: center; gap: 10px; }
+.mcp-search-box { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
+.mcp-search-icon { position: absolute; left: 9px; width: 14px; height: 14px; color: var(--dsw-alias-label-tertiary); pointer-events: none; }
+.mcp-search-input { box-sizing: border-box; width: 100%; height: 30px; padding: 0 30px 0 30px; border: .5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm, 6px); background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 12.5px; line-height: 18px; outline: none; }
+.mcp-search-input::placeholder { color: var(--dsw-alias-label-tertiary); }
+.mcp-search-input:focus-visible { border-color: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary); }
+.mcp-search-input::-webkit-search-cancel-button { display: none; }
+.mcp-search-clear { position: absolute; right: 4px; width: 22px; height: 22px; padding: 0; border: none; border-radius: var(--dsw-radius-sm, 6px); background: transparent; color: var(--dsw-alias-label-tertiary); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.mcp-search-clear:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.mcp-search-clear:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); outline-offset: 1px; }
+.mcp-search-count { flex: none; font-variant-numeric: tabular-nums; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+mark.mcp-hit { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent); color: inherit; border-radius: 2px; }
 `;
 
     // ------------------------------------------------------------ store
@@ -276,7 +298,80 @@ window.__ModuleLoader__.load({
           : letter);
     }
 
-    function Row({ t, p, s, store, uiLocale, all }) {
+    const normalize = (text) => String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const tokensOf = (query) => normalize(query).split(/\s+/).filter(Boolean);
+
+    function statusText(t, p) {
+      const r = p.remote;
+      if (!r) return t('status.unchecked');
+      if (r.status === 'update-available') return t('status.update-available', { version: r.version }) + ' update';
+      if (r.status === 'changes-available') return t('status.changes-available', { count: r.behind }) + ' update';
+      return t(`status.${r.status}`);
+    }
+
+    function haystack(t, p, uiLocale) {
+      const parts = [p.name, p.version, p.version && `v${p.version}`, p.spec, p.kind && t(`kind.${p.kind}`), p.partOf, statusText(t, p)];
+      for (const m of Object.values(p.meta || {})) if (m) parts.push(m.title, m.description);
+      if (p.repo) parts.push(shortRepo(p.repo), p.repo.path, p.repo.branch, p.repo.root);
+      if (p.isBundle) parts.push(t('bundle'));
+      if (p.isBundle && !p.enabled) parts.push(t('disabled'));
+      if (p.missing) parts.push(t('missing'));
+      void uiLocale;
+      return normalize(parts.filter(Boolean).join(' \n '));
+    }
+
+    // Keeps bundle groups together: a match on a member keeps its bundle row, a match on a bundle keeps its members.
+    function filterPlugins(t, plugins, query, uiLocale) {
+      const tokens = tokensOf(query);
+      if (!tokens.length) return plugins;
+      const hit = new Set(plugins.filter((p) => { const text = haystack(t, p, uiLocale); return tokens.every((tok) => text.includes(tok)); }).map((p) => p.name));
+      const keep = new Set(hit);
+      for (const p of plugins) {
+        if (p.partOf && hit.has(p.name)) keep.add(p.partOf);
+        if (p.partOf && hit.has(p.partOf)) keep.add(p.name);
+      }
+      return plugins.filter((p) => keep.has(p.name));
+    }
+
+    // Highlights the query tokens inside a visible label (accent-insensitive).
+    function highlight(text, tokens) {
+      const str = String(text ?? '');
+      if (!tokens || !tokens.length || !str) return str;
+      const norm = normalize(str);
+      if (norm.length !== str.length) return str;
+      const ranges = [];
+      for (const tok of tokens) { let i = norm.indexOf(tok); while (i !== -1) { ranges.push([i, i + tok.length]); i = norm.indexOf(tok, i + tok.length); } }
+      if (!ranges.length) return str;
+      ranges.sort((a, b) => a[0] - b[0]);
+      const merged = [];
+      for (const r of ranges) { const last = merged[merged.length - 1]; if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]); else merged.push([...r]); }
+      const out = []; let pos = 0;
+      merged.forEach(([a, b], k) => { if (a > pos) out.push(str.slice(pos, a)); out.push(h('mark', { key: k, className: 'mcp-hit' }, str.slice(a, b))); pos = b; });
+      if (pos < str.length) out.push(str.slice(pos));
+      return out;
+    }
+
+    const SearchIcon = () => h('svg', { className: 'mcp-search-icon', viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, 'aria-hidden': true },
+      h('circle', { cx: 7, cy: 7, r: 4.5 }), h('path', { d: 'M10.5 10.5 14 14', strokeLinecap: 'round' }));
+    const ClearIcon = () => h('svg', { width: 12, height: 12, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, 'aria-hidden': true },
+      h('path', { d: 'M4 4l8 8M12 4l-8 8', strokeLinecap: 'round' }));
+
+    function SearchBar({ t, query, setQuery, shown, total }) {
+      const ref = React.useRef(null);
+      return h('div', { className: 'mcp-search', role: 'search' },
+        h('div', { className: 'mcp-search-box' },
+          h(SearchIcon),
+          h('input', {
+            ref, type: 'search', className: 'mcp-search-input', value: query, placeholder: t('searchPlaceholder'), 'aria-label': t('search'),
+            spellCheck: false, autoComplete: 'off',
+            onChange: (e) => setQuery(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Escape' && query) { e.preventDefault(); e.stopPropagation(); setQuery(''); } },
+          }),
+          query ? h('button', { type: 'button', className: 'mcp-search-clear', title: t('clearSearch'), 'aria-label': t('clearSearch'), onClick: () => { setQuery(''); ref.current && ref.current.focus(); } }, h(ClearIcon)) : null),
+        query.trim() ? h('span', { className: 'mcp-search-count', 'aria-live': 'polite' }, t('matchCount', { shown, total })) : null);
+    }
+
+    function Row({ t, p, s, store, uiLocale, all, tokens }) {
       const meta = pickMeta(p.meta, uiLocale);
       const title = meta.title || p.name;
       const r = p.remote;
@@ -335,10 +430,10 @@ window.__ModuleLoader__.load({
           h(Icon, { p, title }),
           h('div', { className: 'mcp-main' },
             h('div', { className: 'mcp-title-row' },
-              h('span', { className: 'mcp-title' }, title),
+              h('span', { className: 'mcp-title' }, highlight(title, tokens)),
               p.version ? h('span', { className: 'mcp-version' }, `v${p.version}`) : null,
               tags.length ? h('span', { className: 'mcp-tag' }, tags.join(' · ')) : null),
-            h('span', { className: 'mcp-module', title: p.repo ? p.repo.root : undefined }, sourceLine(t, p))),
+            h('span', { className: 'mcp-module', title: p.repo ? p.repo.root : undefined }, highlight(sourceLine(t, p), tokens))),
           h('div', { className: 'mcp-end' },
             updating
               ? h('span', { className: 'mcp-state' }, h('span', { className: 'mcp-spin', 'aria-hidden': true }), t('updating'))
@@ -354,13 +449,17 @@ window.__ModuleLoader__.load({
       return function CustomPluginsPage({ t, uiLocale }) {
         const s = React.useSyncExternalStore(store.subscribe, store.get);
         const plugins = (s.data && s.data.plugins) || [];
+        const [query, setQuery] = React.useState('');
+        const tokens = React.useMemo(() => tokensOf(query), [query]);
+        const visible = React.useMemo(() => filterPlugins(t, plugins, query, uiLocale), [t, plugins, query, uiLocale]);
         const updates = plugins.filter((p) => p.remote && (p.remote.status === 'update-available' || p.remote.status === 'changes-available')).length;
         const lastCheckAt = s.data && s.data.lastCheckAt;
 
         let body;
         if (!s.data && (s.loading || !s.error)) body = h('p', { className: 'mcp-empty' }, t('loading'));
         else if (s.data && plugins.length === 0) body = h('p', { className: 'mcp-empty' }, t('empty'));
-        else if (s.data) body = h('ul', { className: 'mcp-rows' }, plugins.map((p) => h(Row, { key: p.name, t, p, s, store, uiLocale, all: plugins })));
+        else if (s.data && visible.length === 0) body = h('p', { className: 'mcp-empty' }, t('noMatch', { query: query.trim() }));
+        else if (s.data) body = h('ul', { className: 'mcp-rows' }, visible.map((p) => h(Row, { key: p.name, t, p, s, store, uiLocale, all: plugins, tokens })));
 
         return h('div', { className: 'mcp-section' },
           h('style', null, CSS),
@@ -374,6 +473,7 @@ window.__ModuleLoader__.load({
             h('button', { type: 'button', className: 'mcp-btn mcp-btn-outline', disabled: s.checking || Boolean(s.updating), onClick: () => store.check(true) },
               s.checking ? h('span', { className: 'mcp-spin', 'aria-hidden': true }) : null,
               s.checking ? t('checking') : t('check'))) : null,
+          s.data && plugins.length ? h(SearchBar, { t, query, setQuery, shown: visible.length, total: plugins.length }) : null,
           body);
       };
     }

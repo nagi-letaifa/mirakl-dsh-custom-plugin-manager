@@ -16,6 +16,10 @@ A checkout with uncommitted changes is never pulled. For github.com remotes,
 git runs with the GitHub CLI sign-in (`gh auth git-credential`) when `gh` is
 signed in, without changing the global git configuration (`useGhCredentials`).
 
+A search box above the list filters plugins by name, title, description, source
+(repo, branch, spec), version and status (e.g. `update`); bundle groups stay together
+and matches are highlighted. `Esc` clears it.
+
 After an update the browser half of updated plugins loads on the next page
 reload (the page offers a **Reload page** button). A result with
 `restart-required` needs a DSH restart.
