@@ -1,0 +1,14 @@
+# Settings › Custom plugins: installed custom plugins, their versions, remote
+# update checks and one-click updates.
+- insert:
+    - id: mirakl-dsh-custom-plugin-manager
+      name: 'mirakl-dsh-custom-plugin-manager'
+      config:
+        gitPath: git
+        ghPath: gh
+        # Fetch github.com remotes with the GitHub CLI sign-in (no global git config change).
+        useGhCredentials: true
+        timeoutMs: 60000
+        # Remote check results are reused for this long unless "Check for updates" is pressed.
+        cacheMinutes: 10
+        includeOfficial: false

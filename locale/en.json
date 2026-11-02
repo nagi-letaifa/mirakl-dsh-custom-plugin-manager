@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Custom Plugin Manager",
+    "description": "Adds Settings › Custom plugins: lists your custom installed plugins with their version, checks for newer versions remotely and installs them in one click."
+  }
+}
